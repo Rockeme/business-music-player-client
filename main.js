@@ -8,11 +8,12 @@ const createWindow = () => {
         height: 600,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js')
-        }
+        },
+        icon: path.join(__dirname, 'images/icon.png'),
     })
 
-    // win.loadURL('http://localhost/business-music-player/public/listen/1')
-    win.loadFile('index.html')
+    win.loadURL('http://localhost/business-music-player/public/')
+    // win.loadFile('index.html')
 }
 
 app.whenReady().then(() => {
