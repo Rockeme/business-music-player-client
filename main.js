@@ -4,16 +4,23 @@ const path = require('node:path')
 
 const createWindow = () => {
     const win = new BrowserWindow({
+        show: false,
         width: 800,
         height: 600,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js')
         },
         icon: path.join(__dirname, 'images/icon.png'),
+        backgroundColor: '#303030',
     })
 
-    win.loadURL('http://localhost/business-music-player/public/')
-    // win.loadFile('index.html')
+    win.loadFile('index.html')
+    
+    //win.loadURL('http://localhost/business-music-player/public/login')
+    
+    win.once('ready-to-show', () => {
+        win.show()
+    })
 }
 
 app.whenReady().then(() => {
