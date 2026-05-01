@@ -14,7 +14,7 @@ module.exports = {
         // An URL to an ICO file to use as the application icon (displayed in Control Panel > Programs and Features).
         iconUrl: 'https://rockeme.com/wp-content/uploads/2026/04/icon.ico',
         // The ICO file to use as the icon for the generated Setup.exe
-        setupIcon: path.join(__dirname, 'images/icon.ico'),
+        setupIcon: 'images/icon.ico',
       },
     },
     // {
