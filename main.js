@@ -51,7 +51,7 @@ app.whenReady().then(() => {
         const config = readConfig()
         config.serviceUrl = baseUrl
         saveConfig(config)
-        mainWindow.loadURL(baseUrl + '/public/login')
+        mainWindow.loadURL(baseUrl + '/login')
     })
 
     createWindow()
