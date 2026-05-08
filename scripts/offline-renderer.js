@@ -227,10 +227,17 @@ volumeSlider.addEventListener('input', () => {
     isMuted = false
     player.volume = getVolume()
     updateMuteButton()
+    window.versions.setVolume(Number(volumeSlider.value))
 })
 
 // ── Load cached songs and auto-play on startup ────────────────────────────────
 // The autoplay-policy switch in main.js allows immediate play without a user gesture.
+
+// Restore persisted volume before loading songs
+window.versions.getVolume().then((savedVolume) => {
+    volumeSlider.value = savedVolume
+    player.volume = getVolume()
+})
 
 window.versions.getCachedSongs().then((cachedSongs) => {
     songs = cachedSongs || []
@@ -265,4 +272,27 @@ btnResumeOnline.addEventListener('click', () => {
     pendingResume = false
     reconnectBanner.classList.remove('visible')
     window.versions.resumeOnlineService()
+})
+
+// ── Media key handling ────────────────────────────────────────────────────────
+
+window.versions.onMediaKey((key) => {
+    switch (key) {
+        case 'playpause':
+            if (!player.paused) {
+                player.pause()
+            } else if (songs.length > 0) {
+                playSong(currentIndex >= 0 ? currentIndex : 0)
+            }
+            break
+        case 'next':
+            if (currentIndex < songs.length - 1) playSong(currentIndex + 1)
+            break
+        case 'prev':
+            if (currentIndex > 0) playSong(currentIndex - 1)
+            break
+        case 'stop':
+            stopAudio()
+            break
+    }
 })

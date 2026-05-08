@@ -9,8 +9,12 @@ contextBridge.exposeInMainWorld('versions', {
     setServiceUrl: (url) => ipcRenderer.invoke('set-service-url', url),
     getCachedSongs: () => ipcRenderer.invoke('get-cached-songs'),
     getOfflineStatus: () => ipcRenderer.invoke('get-offline-status'),
+    getVolume: () => ipcRenderer.invoke('get-volume'),
+    setVolume: (value) => ipcRenderer.invoke('set-volume', value),
     // Tells the main process to navigate to the online service immediately.
     resumeOnlineService: () => ipcRenderer.invoke('resume-online-service'),
     // Registers a callback that fires when connectivity is restored while offline.
     onConnectivityRestored: (callback) => ipcRenderer.on('connectivity-restored', (_event, data) => callback(data)),
+    // Registers a callback for media key events (MediaPlayPause, next, prev, stop).
+    onMediaKey: (callback) => ipcRenderer.on('media-key', (_event, key) => callback(key)),
 })

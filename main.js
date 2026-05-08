@@ -1,4 +1,6 @@
-const { app, BrowserWindow, ipcMain, Menu, dialog, net, session } = require('electron/main')
+if (require('electron-squirrel-startup')) app.quit()
+
+const { app, BrowserWindow, ipcMain, Menu, dialog, net, session, Tray, globalShortcut, nativeImage } = require('electron/main')
 
 const path = require('node:path')
 const fs = require('node:fs')
@@ -33,6 +35,8 @@ const saveConfig = (config) => {
 let mainWindow = null
 let cacheManager = null
 let connectivity = null
+let tray = null
+let isQuitting = false
 
 /**
  * Tracks which UI the window is currently showing:
@@ -75,6 +79,48 @@ async function readAndStoreMetadata(url, song) {
     } catch (err) {
         console.warn(`[cache] Could not read metadata for ${song.id}:`, err.message)
     }
+}
+
+// ── Media key handler ─────────────────────────────────────────────────────────
+
+function handleMediaKey(key) {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (appMode === 'offline') {
+        // Offline renderer listens for this IPC event
+        mainWindow.webContents.send('media-key', key)
+    } else if (appMode === 'online') {
+        // Simulate the media key inside the remote service page
+        const keyCode = { playpause: 'MediaPlayPause', next: 'MediaNextTrack', prev: 'MediaPreviousTrack', stop: 'MediaStop' }[key]
+        if (keyCode) {
+            mainWindow.webContents.sendInputEvent({ type: 'keyDown', keyCode })
+            mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode })
+        }
+    }
+}
+
+// ── Tray ──────────────────────────────────────────────────────────────────────
+
+function createTray() {
+    const icon = nativeImage.createFromPath(path.join(__dirname, 'images/icon.png'))
+    tray = new Tray(icon)
+    tray.setToolTip('Rockplayer')
+
+    const contextMenu = Menu.buildFromTemplate([
+        { label: 'Mostrar ventana', click: () => { if (mainWindow) mainWindow.show() } },
+        { type: 'separator' },
+        {
+            label: 'Salir',
+            click: () => {
+                isQuitting = true
+                if (connectivity) connectivity.stop()
+                app.quit()
+            },
+        },
+    ])
+    tray.setContextMenu(contextMenu)
+    tray.on('click', () => {
+        if (mainWindow) mainWindow.isVisible() ? mainWindow.focus() : mainWindow.show()
+    })
 }
 
 // ── Audio download ────────────────────────────────────────────────────────────
@@ -284,6 +330,14 @@ const createWindow = () => {
         mainWindow.show()
     })
 
+    // Hide to tray instead of closing
+    mainWindow.on('close', (e) => {
+        if (!isQuitting) {
+            e.preventDefault()
+            mainWindow.hide()
+        }
+    })
+
     // Switch to offline player when the remote service becomes unreachable
     mainWindow.webContents.on('did-fail-load', (_event, errorCode) => {
         // Ignore -3 (ABORTED) which fires when we intentionally navigate away,
@@ -327,6 +381,14 @@ app.whenReady().then(async () => {
     cacheManager = new CacheManager(app.getPath('userData'))
     connectivity = new ConnectivityManager()
 
+    createTray()
+
+    // Register media key global shortcuts
+    globalShortcut.register('MediaPlayPause', () => handleMediaKey('playpause'))
+    globalShortcut.register('MediaNextTrack',  () => handleMediaKey('next'))
+    globalShortcut.register('MediaPreviousTrack', () => handleMediaKey('prev'))
+    globalShortcut.register('MediaStop', () => handleMediaKey('stop'))
+
     // Check connectivity once before creating the window so we know the initial state
     await connectivity.checkNow().catch(() => {})
     connectivity.start()
@@ -359,6 +421,17 @@ app.whenReady().then(async () => {
     // ── IPC handlers ─────────────────────────────────────────────────────────
 
     ipcMain.handle('ping', () => 'pong')
+
+    ipcMain.handle('get-volume', () => {
+        const config = readConfig()
+        return config.volume !== undefined ? config.volume : 90
+    })
+
+    ipcMain.handle('set-volume', (_event, value) => {
+        const config = readConfig()
+        config.volume = value
+        saveConfig(config)
+    })
 
     ipcMain.handle('get-service-url', () => {
         const config = readConfig()
@@ -433,8 +506,26 @@ app.whenReady().then(async () => {
                 },
                 { type: 'separator' },
                 {
+                    label: 'Acerca de Rockplayer',
+                    click: () => {
+                        dialog.showMessageBox(mainWindow, {
+                            type: 'info',
+                            title: 'Acerca de Rockplayer',
+                            message: 'Rockplayer',
+                            detail: `Versión ${app.getVersion()}\n\nReproductor de música para negocios.\n\n© 2026 Rockeme S.A.S.\nhttps://rockeme.com`,
+                            buttons: ['Cerrar'],
+                            icon: path.join(__dirname, 'images/icon.png'),
+                        })
+                    },
+                },
+                { type: 'separator' },
+                {
                     label: 'Salir',
-                    role: 'quit',
+                    click: () => {
+                        isQuitting = true
+                        if (connectivity) connectivity.stop()
+                        app.quit()
+                    },
                 },
             ],
         },
@@ -447,6 +538,10 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-    if (connectivity) connectivity.stop()
-    if (process.platform !== 'darwin') app.quit()
+    // App lives in the tray; actual quit is handled via the menu's Salir option.
+    if (process.platform === 'darwin') app.quit()
+})
+
+app.on('will-quit', () => {
+    globalShortcut.unregisterAll()
 })
