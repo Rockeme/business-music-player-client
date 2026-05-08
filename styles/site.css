@@ -1,0 +1,31 @@
+html, body {
+    font-family: var(--site-font-body, "Poppins", sans-serif);
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--site-font-heading, "Big Shoulders Text", sans-serif);
+}
+
+h1 a, h2 a, h3 a, h4 a, h5 a, h6 a {
+    font-weight: inherit;
+}
+
+.material-symbols-rounded {
+    font-family: 'Material Symbols Rounded';
+    font-weight: normal;
+    font-style: normal;
+    font-size: inherit;
+    display: inline-block;
+    line-height: inherit;
+    text-transform: none;
+    letter-spacing: normal;
+    word-wrap: normal;
+    white-space: nowrap;
+    direction: ltr;
+}
+
+:focus-visible {
+    outline: 2px solid #888 !important;
+    box-shadow: 0 0 0 2px #ccc !important;
+    border-radius: 4px;
+}

@@ -167,6 +167,20 @@ class CacheManager {
             .sort((a, b) => b.addedAt - a.addedAt)
     }
 
+    /** Updates title/artist/album/year/coverPath after reading ID3 tags. */
+    updateMetadata(url, meta) {
+        const id = this._urlToId(url)
+        const song = this.index.songs.find(s => s.id === id)
+        if (song) {
+            if (meta.title)     song.title     = meta.title
+            if (meta.artist)    song.artist    = meta.artist
+            if (meta.album)     song.album     = meta.album
+            if (meta.year)      song.year      = meta.year
+            if (meta.coverPath) song.coverPath = meta.coverPath
+            this._saveIndex()
+        }
+    }
+
     /** Evicts oldest songs when the cache exceeds MAX_CACHE_BYTES. */
     _cleanup() {
         const songs = this.index.songs.filter(s => s.available).sort((a, b) => a.addedAt - b.addedAt)
@@ -178,6 +192,25 @@ class CacheManager {
             total -= oldest.size || 0
         }
         this._saveIndex()
+    }
+
+    /**
+     * Deletes every audio file and cover in the cache directory and resets the
+     * index. Returns the number of songs that were removed.
+     */
+    clearAll() {
+        const count = this.index.songs.filter(s => s.available).length
+        // Delete all files in the cache directory
+        try {
+            const files = fs.readdirSync(this.cacheDir)
+            for (const f of files) {
+                try { fs.unlinkSync(path.join(this.cacheDir, f)) } catch {}
+            }
+        } catch {}
+        this.index = { songs: [] }
+        this._saveIndex()
+        console.log(`[cache] Cleared ${count} cached song(s)`)
+        return count
     }
 }
 
