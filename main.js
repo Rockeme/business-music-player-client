@@ -1,6 +1,6 @@
 if (require('electron-squirrel-startup')) app.quit()
 
-const { app, BrowserWindow, ipcMain, Menu, dialog, net, session, Tray, globalShortcut, nativeImage } = require('electron/main')
+const { app, BrowserWindow, ipcMain, Menu, dialog, net, session, Tray, globalShortcut, nativeImage, autoUpdater } = require('electron/main')
 
 const path = require('node:path')
 const fs = require('node:fs')
@@ -96,6 +96,93 @@ function handleMediaKey(key) {
             mainWindow.webContents.sendInputEvent({ type: 'keyUp', keyCode })
         }
     }
+}
+
+// ── Auto-updater ──────────────────────────────────────────────────────────────
+
+/**
+ * Configures Squirrel's autoUpdater against update.electronjs.org (a free
+ * GitHub-Releases–backed update server maintained by the Electron team).
+ *
+ * Flow:
+ *   1. setFeedURL  – tells Squirrel where to look for updates.
+ *   2. checkForUpdates – Squirrel sends a HEAD/GET to the feed URL.
+ *   3. The server compares the requested version with the latest GitHub Release.
+ *      • If up-to-date  → HTTP 204 → 'update-not-available'.
+ *      • If newer exists → HTTP 200 + JSON manifest → Squirrel starts download.
+ *   4. Once the .nupkg is fully downloaded → 'update-downloaded'.
+ *   5. quitAndInstall() → Squirrel silently installs in the background and
+ *      relaunches the app with the new version.
+ *
+ * Requirements for this to work in production:
+ *   • The GitHub repository must be PUBLIC.
+ *   • Each release must be published (not draft) and contain the Squirrel
+ *     artifacts produced by `npm run make`:
+ *       - RELEASES  (index file Squirrel reads first)
+ *       - *.nupkg   (the delta/full package)
+ *       - *Setup.exe (optional, only needed for fresh installs)
+ *   • The version in package.json must be bumped before each release so the
+ *     server can detect that a newer version exists.
+ *
+ * In development (`npm start`) app.isPackaged is false, so this function
+ * returns early and nothing is registered.
+ */
+function setupAutoUpdater() {
+    if (!app.isPackaged) {
+        console.log('[updater] Modo desarrollo — auto-updater desactivado.')
+        return
+    }
+
+    const feedURL = `https://update.electronjs.org/Rockeme/business-music-player-client/${process.platform}-${process.arch}/${app.getVersion()}`
+
+    try {
+        autoUpdater.setFeedURL({ url: feedURL })
+    } catch (err) {
+        console.error('[updater] No se pudo configurar el feed URL:', err.message)
+        return
+    }
+
+    autoUpdater.on('checking-for-update', () => {
+        console.log('[updater] Buscando actualizaciones…')
+    })
+
+    autoUpdater.on('update-available', () => {
+        console.log('[updater] Actualización encontrada — descargando en segundo plano…')
+    })
+
+    autoUpdater.on('update-not-available', () => {
+        console.log('[updater] La aplicación está al día.')
+    })
+
+    autoUpdater.on('update-downloaded', (_event, releaseNotes, releaseName) => {
+        console.log(`[updater] Actualización descargada: ${releaseName}`)
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: 'Actualización lista',
+            message: `Rockplayer ${releaseName} está listo para instalarse.`,
+            detail: 'La nueva versión se instalará al reiniciar.\n¿Deseas reiniciar ahora?',
+            buttons: ['Reiniciar ahora', 'Más tarde'],
+            defaultId: 0,
+            cancelId: 1,
+            icon: path.join(__dirname, 'images/icon.png'),
+        }).then(({ response }) => {
+            if (response === 0) {
+                isQuitting = true
+                autoUpdater.quitAndInstall()
+            }
+        })
+    })
+
+    autoUpdater.on('error', (err) => {
+        console.error('[updater] Error al buscar actualizaciones:', err.message)
+    })
+
+    // First check 10 s after startup (gives the app time to fully load)
+    setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 10_000)
+
+    // Then check every hour automatically
+    setInterval(() => autoUpdater.checkForUpdates().catch(() => {}), 60 * 60 * 1000)
 }
 
 // ── Tray ──────────────────────────────────────────────────────────────────────
@@ -382,6 +469,7 @@ app.whenReady().then(async () => {
     connectivity = new ConnectivityManager()
 
     createTray()
+    setupAutoUpdater()
 
     // Register media key global shortcuts
     globalShortcut.register('MediaPlayPause', () => handleMediaKey('playpause'))
@@ -505,6 +593,29 @@ app.whenReady().then(async () => {
                     },
                 },
                 { type: 'separator' },
+                {
+                    label: 'Buscar actualizaciones…',
+                    click: () => {
+                        if (!app.isPackaged) {
+                            dialog.showMessageBox(mainWindow, {
+                                type: 'info',
+                                title: 'Modo desarrollo',
+                                message: 'Las actualizaciones automáticas solo están disponibles en la versión instalada.',
+                                buttons: ['Entendido'],
+                            })
+                            return
+                        }
+                        autoUpdater.checkForUpdates().catch((err) => {
+                            dialog.showMessageBox(mainWindow, {
+                                type: 'error',
+                                title: 'Error al buscar actualizaciones',
+                                message: 'No se pudo contactar el servidor de actualizaciones.',
+                                detail: err.message,
+                                buttons: ['Cerrar'],
+                            })
+                        })
+                    },
+                },
                 {
                     label: 'Acerca de Rockplayer',
                     click: () => {
