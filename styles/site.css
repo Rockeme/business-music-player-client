@@ -1,3 +1,11 @@
+/* ── Material Symbols (bundled font — works without internet) ────────────── */
+@font-face {
+    font-family: 'Material Symbols Rounded';
+    font-style: normal;
+    font-weight: 400;
+    src: url('../fonts/MaterialSymbolsRounded.ttf') format('truetype');
+}
+
 html, body {
     font-family: var(--site-font-body, "Poppins", sans-serif);
 }
@@ -22,6 +30,7 @@ h1 a, h2 a, h3 a, h4 a, h5 a, h6 a {
     word-wrap: normal;
     white-space: nowrap;
     direction: ltr;
+    -webkit-font-smoothing: antialiased;
 }
 
 :focus-visible {

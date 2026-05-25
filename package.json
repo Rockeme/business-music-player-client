@@ -1,7 +1,7 @@
 {
   "name": "business-music-player-client",
   "version": "1.0.0",
-  "description": "A music player client usig for businiess music player service",
+  "description": "A music player client for the business music player service",
   "keywords": [
     "business",
     "music",

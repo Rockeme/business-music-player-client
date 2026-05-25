@@ -1,6 +1,6 @@
-if (require('electron-squirrel-startup')) app.quit()
-
 const { app, BrowserWindow, ipcMain, Menu, dialog, net, session, Tray, globalShortcut, nativeImage, autoUpdater } = require('electron/main')
+
+if (require('electron-squirrel-startup')) app.quit()
 
 const path = require('node:path')
 const fs = require('node:fs')
@@ -18,15 +18,18 @@ app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
 const getConfigPath = () => path.join(app.getPath('userData'), 'config.json')
 
 const readConfig = () => {
+    if (_config) return _config
     try {
         const data = fs.readFileSync(getConfigPath(), 'utf8')
-        return JSON.parse(data)
+        _config = JSON.parse(data)
     } catch {
-        return {}
+        _config = {}
     }
+    return _config
 }
 
 const saveConfig = (config) => {
+    _config = config
     fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), 'utf8')
 }
 
@@ -37,6 +40,8 @@ let cacheManager = null
 let connectivity = null
 let tray = null
 let isQuitting = false
+let _config = null          // in-memory config cache
+let _volumeSaveTimer = null // debounce handle for volume disk writes
 
 /**
  * Tracks which UI the window is currently showing:
@@ -391,8 +396,8 @@ function injectStatusIndicator(isOnline, overrideLabel, overrideDot) {
 const createWindow = () => {
     mainWindow = new BrowserWindow({
         show: false,
-        width: 800,
-        height: 600,
+        width: 1280,
+        height: 720,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
         },
@@ -461,6 +466,25 @@ const createWindow = () => {
     })
 }
 
+// ── Single instance lock ──────────────────────────────────────────────────────
+
+// Prevent multiple instances from running simultaneously. Only the first
+// instance acquires the lock and continues. Any subsequent launch focuses the
+// existing window and exits immediately (matching the official Electron pattern).
+const gotTheLock = app.requestSingleInstanceLock()
+
+if (!gotTheLock) {
+    app.quit()
+} else {
+
+app.on('second-instance', () => {
+    if (mainWindow) {
+        if (!mainWindow.isVisible()) mainWindow.show()
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.focus()
+    }
+})
+
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -518,7 +542,11 @@ app.whenReady().then(async () => {
     ipcMain.handle('set-volume', (_event, value) => {
         const config = readConfig()
         config.volume = value
-        saveConfig(config)
+        if (_volumeSaveTimer) clearTimeout(_volumeSaveTimer)
+        _volumeSaveTimer = setTimeout(() => {
+            _volumeSaveTimer = null
+            saveConfig(config)
+        }, 500)
     })
 
     ipcMain.handle('get-service-url', () => {
@@ -655,4 +683,12 @@ app.on('window-all-closed', () => {
 
 app.on('will-quit', () => {
     globalShortcut.unregisterAll()
+    // Flush any pending debounced volume write so the setting is not lost on exit
+    if (_volumeSaveTimer) {
+        clearTimeout(_volumeSaveTimer)
+        _volumeSaveTimer = null
+        if (_config) saveConfig(_config)
+    }
 })
+
+} // end of gotTheLock else block
