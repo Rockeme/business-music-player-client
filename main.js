@@ -193,7 +193,7 @@ function setupAutoUpdater() {
 // ── Tray ──────────────────────────────────────────────────────────────────────
 
 function createTray() {
-    const icon = nativeImage.createFromPath(path.join(__dirname, 'images/icon.png'))
+    const icon = nativeImage.createFromPath(path.join(__dirname, 'images/icon.ico'))
     tray = new Tray(icon)
     tray.setToolTip('Rockplayer')
 
@@ -659,6 +659,30 @@ app.whenReady().then(async () => {
                             detail: `Versión ${app.getVersion()}\n\nReproductor de música para negocios.\n\n© 2026 Rockeme S.A.S.\nhttps://rockeme.com`,
                             buttons: ['Cerrar'],
                             icon: path.join(__dirname, 'images/icon.png'),
+                        })
+                    },
+                },
+                {
+                    label: 'Iniciar con Windows',
+                    type: 'checkbox',
+                    checked: app.getLoginItemSettings().openAtLogin,
+                    click: (menuItem) => {
+                        if (!app.isPackaged) {
+                            menuItem.checked = !menuItem.checked
+                            dialog.showMessageBox(mainWindow, {
+                                type: 'info',
+                                title: 'Modo desarrollo',
+                                message: 'Esta opción solo funciona en la versión instalada.',
+                                buttons: ['Entendido'],
+                            })
+                            return
+                        }
+                        const exeName = path.basename(process.execPath)
+                        const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe')
+                        app.setLoginItemSettings({
+                            openAtLogin: menuItem.checked,
+                            path: updateExe,
+                            args: ['--processStart', `"${exeName}"`],
                         })
                     },
                 },
