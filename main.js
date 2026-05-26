@@ -400,6 +400,11 @@ const createWindow = () => {
         height: 720,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
+            // Prevent Chromium from pausing audio/timers when the window is
+            // hidden to the system tray. Without this, hiding the window sets
+            // document.visibilityState = "hidden" and Chromium throttles/pauses
+            // media playback automatically.
+            backgroundThrottling: false,
         },
         icon: path.join(__dirname, 'images/icon.ico'),
         backgroundColor: '#303030',
