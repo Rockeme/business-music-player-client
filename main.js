@@ -339,9 +339,32 @@ function setupSessionHooks() {
 
 // ── App mode transitions ──────────────────────────────────────────────────────
 
-function goOnline(serviceUrl) {
+function trackLastUrl(url) {
+    if (!url || appMode !== 'online') return
+    const config = readConfig()
+    if (!config.serviceUrl) return
+
+    if (url.startsWith(config.serviceUrl)) {
+        try {
+            const parsedUrl = new URL(url)
+            const pathname = parsedUrl.pathname.toLowerCase()
+            if (!pathname.endsWith('/login') && !pathname.endsWith('/logout') && !pathname.includes('/auth/')) {
+                if (config.lastUrl !== url) {
+                    config.lastUrl = url
+                    saveConfig(config)
+                    console.log('[config] Guardada última URL:', url)
+                }
+            }
+        } catch {}
+    }
+}
+
+function goOnline(serviceUrl, targetUrl = null) {
     appMode = 'online'
-    mainWindow.loadURL(serviceUrl + '/login')
+    const config = readConfig()
+    const destination = targetUrl || config.lastUrl || (serviceUrl.endsWith('/') ? serviceUrl + 'login' : serviceUrl + '/login')
+    console.log('[navigation] Cargando URL:', destination)
+    mainWindow.loadURL(destination)
 }
 
 function goOffline() {
@@ -410,6 +433,14 @@ const createWindow = () => {
         backgroundColor: '#303030',
     })
 
+    // Listen to navigation events to persist last visited URL
+    mainWindow.webContents.on('did-navigate', (_event, url) => {
+        trackLastUrl(url)
+    })
+    mainWindow.webContents.on('did-navigate-in-page', (_event, url) => {
+        trackLastUrl(url)
+    })
+
     // If a service URL is already configured, go directly to it
     const config = readConfig()
     if (config.serviceUrl) {
@@ -455,18 +486,33 @@ const createWindow = () => {
             injectStatusIndicator(connectivity ? connectivity.isOnline : false)
         }
 
-        // After an offline→online transition, auto-click the play button once the
-        // service page finishes loading (small delay so the page JS is fully ready).
-        if (shouldAutoPlay && appMode === 'online') {
-            shouldAutoPlay = false
-            mainWindow.webContents.executeJavaScript(
-                `setTimeout(function(){` +
-                `  var btn = document.getElementById('play-button') ||` +
-                `            document.querySelector('[id*="play"]') ||` +
-                `            document.querySelector('button[class*="play"]');` +
-                `  if(btn) btn.click();` +
-                `}, 1200);`
-            ).catch(() => {})
+        if (appMode === 'online') {
+            const currentUrl = mainWindow.webContents.getURL()
+            const isLoginPage = currentUrl.includes('/login') || currentUrl.includes('/auth/')
+
+            if (!isLoginPage) {
+                shouldAutoPlay = false
+                mainWindow.webContents.executeJavaScript(
+                    `(function autoPlay() {` +
+                    `  var attempts = 0;` +
+                    `  var interval = setInterval(function() {` +
+                    `    attempts++;` +
+                    `    var btn = document.getElementById('play-button') ||` +
+                    `              document.querySelector('[id*="play"]') ||` +
+                    `              document.querySelector('button[class*="play"]');` +
+                    `    if (btn) {` +
+                    `      if (!btn.classList.contains('w3-disabled')) {` +
+                    `        btn.click();` +
+                    `        console.log('[Rockplayer] Reproducción iniciada automáticamente');` +
+                    `      }` +
+                    `      clearInterval(interval);` +
+                    `    } else if (attempts >= 10) {` +
+                    `      clearInterval(interval);` +
+                    `    }` +
+                    `  }, 500);` +
+                    `})()`
+                ).catch(() => {})
+            }
         }
     })
 }
@@ -562,6 +608,7 @@ app.whenReady().then(async () => {
     ipcMain.handle('set-service-url', (_event, baseUrl) => {
         const config = readConfig()
         config.serviceUrl = baseUrl
+        delete config.lastUrl
         saveConfig(config)
         connectivity.setServiceUrl(baseUrl)
         goOnline(baseUrl)
