@@ -58,8 +58,9 @@ function updatePlayPauseButtons(isPlaying) {
 }
 
 function updateNavButtons() {
-    btnPrev.classList.toggle('w3-disabled', currentIndex <= 0)
-    btnNext.classList.toggle('w3-disabled', currentIndex >= songs.length - 1)
+    const disableNav = songs.length <= 1
+    btnPrev.classList.toggle('w3-disabled', disableNav)
+    btnNext.classList.toggle('w3-disabled', disableNav)
 }
 
 function updateTimeDisplay() {
@@ -183,6 +184,18 @@ function stopAudio() {
     updatePlayPauseButtons(false)
 }
 
+function playNextSong() {
+    if (songs.length === 0) return
+    const nextIndex = (currentIndex + 1) % songs.length
+    playSong(nextIndex)
+}
+
+function playPrevSong() {
+    if (songs.length === 0) return
+    const prevIndex = (currentIndex - 1 + songs.length) % songs.length
+    playSong(prevIndex)
+}
+
 // ── Audio events (mirrors playerControls.js pattern) ─────────────────────────
 
 player.addEventListener('play',  () => updatePlayPauseButtons(true))
@@ -194,11 +207,18 @@ player.addEventListener('ended', () => {
         window.versions.resumeOnlineService()
         return
     }
-    if (currentIndex < songs.length - 1) {
-        playSong(currentIndex + 1)
+    if (songs.length > 0) {
+        playNextSong()
     } else {
         isStopped = true
         updatePlayPauseButtons(false)
+    }
+})
+
+player.addEventListener('error', (e) => {
+    console.error('[offline] player error:', player.error, e)
+    if (!isStopped && songs.length > 1) {
+        setTimeout(playNextSong, 1500)
     }
 })
 
@@ -214,8 +234,8 @@ playButton.addEventListener('click', () => {
 
 pauseButton.addEventListener('click', () => { player.pause() })
 stopButton.addEventListener('click', stopAudio)
-btnPrev.addEventListener('click', () => playSong(currentIndex - 1))
-btnNext.addEventListener('click', () => playSong(currentIndex + 1))
+btnPrev.addEventListener('click', playPrevSong)
+btnNext.addEventListener('click', playNextSong)
 
 muteButton.addEventListener('click', () => {
     isMuted = !isMuted
@@ -286,10 +306,10 @@ window.versions.onMediaKey((key) => {
             }
             break
         case 'next':
-            if (currentIndex < songs.length - 1) playSong(currentIndex + 1)
+            playNextSong()
             break
         case 'prev':
-            if (currentIndex > 0) playSong(currentIndex - 1)
+            playPrevSong()
             break
         case 'stop':
             stopAudio()
