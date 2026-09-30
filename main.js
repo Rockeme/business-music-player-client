@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, Menu, dialog, net, session, Tray, globalShortcut, nativeImage, autoUpdater } = require('electron/main')
+const { app, BrowserWindow, ipcMain, Menu, dialog, net, session, Tray, globalShortcut, nativeImage, autoUpdater, protocol } = require('electron/main')
 
 if (require('electron-squirrel-startup')) app.quit()
 
 const path = require('node:path')
 const fs = require('node:fs')
+const { Readable } = require('node:stream')
 
 const { parseFile, selectCover } = require('music-metadata')
 const CacheManager = require('./cache-manager')
@@ -215,107 +216,128 @@ function createTray() {
     })
 }
 
-// ── Audio download ────────────────────────────────────────────────────────────
+// ── Audio protocol interception (Cache-First + Single-Stream Caching) ───────────
 
-async function downloadAudio(url, contentType) {
-    const song = cacheManager.register(url, contentType)
-    if (!song) {
-        // Race condition: already registered by another intercept event
-        activeDownloads.delete(url)
-        return
-    }
+function setupAudioProtocolInterception() {
+    const handleAudioRequest = async (request) => {
+        const url = request.url
 
-    const tmpPath = song.filePath + '.tmp'
-    let writeStream = null
+        // Pass non-audio requests straight through to the network
+        if (!cacheManager || !cacheManager.isAudio(url, '')) {
+            return net.fetch(request, { bypassCustomProtocolHandlers: true })
+        }
 
-    try {
-        await new Promise((resolve, reject) => {
-            const req = net.request({ method: 'GET', url })
-
-            // Abort and fail if we don't get a response within 2 minutes
-            const overallTimer = setTimeout(() => {
-                try { req.abort() } catch {}
-                reject(new Error('download timeout'))
-            }, 120_000)
-
-            req.on('response', (res) => {
-                clearTimeout(overallTimer)
-
-                if (res.statusCode !== 200) {
-                    reject(new Error(`HTTP ${res.statusCode}`))
-                    return
-                }
-
-                let totalBytes = 0
-                writeStream = fs.createWriteStream(tmpPath)
-
-                res.on('data', (chunk) => {
-                    totalBytes += chunk.length
-                    writeStream.write(chunk)
-                })
-
-                res.on('end', () => {
-                    writeStream.end()
-                    writeStream.once('finish', () => {
-                        try {
-                            fs.renameSync(tmpPath, song.filePath)
-                            cacheManager.markAvailable(url, totalBytes)
-                            console.log(`[cache] Saved: "${song.title}" (${(totalBytes / 1024).toFixed(0)} KB)`)
-                        } catch (e) {
-                            reject(e)
-                            return
-                        }
-                        // Read ID3 / Vorbis / AAC tags asynchronously after the file is safe
-                        setImmediate(() => readAndStoreMetadata(url, song))
-                        resolve()
+        // 1. CACHE HIT: Serve directly from local disk (0 KB downloaded!)
+        if (cacheManager.isAvailable(url)) {
+            const song = cacheManager.getByUrl(url)
+            if (song && fs.existsSync(song.filePath)) {
+                const fileUrl = 'file:///' + song.filePath.replace(/\\/g, '/')
+                console.log(`[cache] Cache HIT (0 KB downloaded): Serving "${song.title || song.id}" from local cache`)
+                try {
+                    return await net.fetch(fileUrl, {
+                        headers: request.headers,
                     })
-                    writeStream.once('error', reject)
-                })
+                } catch (err) {
+                    console.warn(`[cache] Failed to fetch local file ${fileUrl}, falling back to network:`, err.message)
+                }
+            }
+        }
 
-                res.on('error', reject)
-            })
+        // 2. CACHE MISS: Single stream from network, tee to client and cache simultaneously
+        const rangeHeader = request.headers.get('range') || ''
+        const isFullStream = !rangeHeader || rangeHeader === 'bytes=0-' || rangeHeader.startsWith('bytes=0-')
 
-            req.on('error', (err) => { clearTimeout(overallTimer); reject(err) })
-            req.end()
+        // If it's a partial range request (seeking without starting from 0) or already downloading
+        if (!isFullStream || activeDownloads.has(url)) {
+            return net.fetch(request, { bypassCustomProtocolHandlers: true })
+        }
+
+        const song = cacheManager.register(url, '')
+        if (!song) {
+            return net.fetch(request, { bypassCustomProtocolHandlers: true })
+        }
+
+        activeDownloads.add(url)
+
+        let response
+        try {
+            response = await net.fetch(request, { bypassCustomProtocolHandlers: true })
+        } catch (fetchErr) {
+            activeDownloads.delete(url)
+            cacheManager.markFailed(url)
+            throw fetchErr
+        }
+
+        const isOkStatus = response.status === 200 || response.status === 206
+        const contentType = response.headers.get('content-type') || ''
+
+        // Ensure response is valid audio stream before caching
+        if (!isOkStatus || (contentType && !cacheManager.isAudio(url, contentType)) || !response.body) {
+            activeDownloads.delete(url)
+            if (!isOkStatus) cacheManager.markFailed(url)
+            return response
+        }
+
+        // Split the single network stream:
+        // - clientStream feeds the <audio> player in real time
+        // - cacheStream writes simultaneously to disk
+        const [clientStream, cacheStream] = response.body.tee()
+
+        const tmpPath = song.filePath + '.tmp'
+        const fileStream = fs.createWriteStream(tmpPath)
+        let totalBytes = 0
+
+        const nodeReadable = Readable.fromWeb(cacheStream)
+        nodeReadable.on('data', (chunk) => {
+            totalBytes += chunk.length
         })
-    } catch (err) {
-        console.error(`[cache] Download failed for ${url}:`, err.message)
-        try { if (writeStream) writeStream.destroy() } catch {}
-        try { fs.unlinkSync(tmpPath) } catch {}
-        cacheManager.markFailed(url)
-    } finally {
-        activeDownloads.delete(url)
+
+        nodeReadable.pipe(fileStream)
+
+        fileStream.on('finish', () => {
+            activeDownloads.delete(url)
+            try {
+                fs.renameSync(tmpPath, song.filePath)
+                cacheManager.markAvailable(url, totalBytes)
+                console.log(`[cache] Stream-saved: "${song.title}" (${(totalBytes / 1024).toFixed(0)} KB)`)
+                setImmediate(() => readAndStoreMetadata(url, song))
+            } catch (err) {
+                console.error(`[cache] Failed to finalize stream-cache for ${url}:`, err.message)
+                try { fs.unlinkSync(tmpPath) } catch {}
+                cacheManager.markFailed(url)
+            }
+        })
+
+        fileStream.on('error', (err) => {
+            activeDownloads.delete(url)
+            console.error(`[cache] Error writing stream-cache for ${url}:`, err.message)
+            try { fs.unlinkSync(tmpPath) } catch {}
+            cacheManager.markFailed(url)
+        })
+
+        nodeReadable.on('error', (err) => {
+            activeDownloads.delete(url)
+            console.error(`[cache] Network stream error for ${url}:`, err.message)
+            try { fileStream.destroy() } catch {}
+            try { fs.unlinkSync(tmpPath) } catch {}
+            cacheManager.markFailed(url)
+        })
+
+        return new Response(clientStream, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+        })
     }
+
+    protocol.handle('http', handleAudioRequest)
+    protocol.handle('https', handleAudioRequest)
+    console.log('[cache] Audio protocol interception active (Cache-First + Single-Stream)')
 }
 
 // ── Audio interception ────────────────────────────────────────────────────────
 
 function setupSessionHooks() {
-    // 1. Observe response headers to detect and background-download audio.
-    session.defaultSession.webRequest.onHeadersReceived(
-        { urls: ['*://*/*'] },
-        (details, callback) => {
-            if (
-                details.method === 'GET' &&
-                details.resourceType !== 'mainFrame' &&
-                cacheManager
-            ) {
-                const ct = ((details.responseHeaders['content-type'] || [])[0] || '')
-                const url = details.url
-
-                if (
-                    cacheManager.isAudio(url, ct) &&
-                    !cacheManager.isAvailable(url) &&
-                    !activeDownloads.has(url)
-                ) {
-                    activeDownloads.add(url)
-                    setImmediate(() => downloadAudio(url, ct))
-                }
-            }
-
-            callback({ responseHeaders: details.responseHeaders })
-        }
-    )
 
     // 2. Detect audio stream failures immediately instead of waiting for the
     //    next periodic ping. This is what makes the offline switch feel instant.
@@ -542,6 +564,8 @@ app.whenReady().then(async () => {
     // Initialise subsystems
     cacheManager = new CacheManager(app.getPath('userData'))
     connectivity = new ConnectivityManager()
+
+    setupAudioProtocolInterception()
 
     createTray()
     setupAutoUpdater()

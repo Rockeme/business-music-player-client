@@ -46,11 +46,28 @@ class CacheManager {
             const parsed = JSON.parse(data)
             this.index = parsed
             if (!Array.isArray(this.index.songs)) this.index.songs = []
-            // Validate: mark missing files as unavailable so they can be re-downloaded
+
+            // Validate: remove incomplete or missing files from index and cleanup orphaned covers
+            const validSongs = []
+            let changed = false
+
             for (const song of this.index.songs) {
-                if (song.available && !fs.existsSync(song.filePath)) {
-                    song.available = false
+                if (song && song.available && fs.existsSync(song.filePath)) {
+                    validSongs.push(song)
+                } else {
+                    if (song && song.coverPath) {
+                        try { fs.unlinkSync(song.coverPath) } catch {}
+                    }
+                    if (song && song.filePath) {
+                        try { fs.unlinkSync(song.filePath) } catch {}
+                    }
+                    changed = true
                 }
+            }
+
+            this.index.songs = validSongs
+            if (changed) {
+                this._saveIndex()
             }
         } catch {
             this.index = { songs: [] }
@@ -117,11 +134,25 @@ class CacheManager {
 
     /**
      * Registers a song URL in the index (pending download).
-     * Returns the song entry, or null if it was already registered.
+     * Returns the song entry, or null if it was already registered and available.
      */
     register(url, contentType) {
         const id = this._urlToId(url)
-        if (this.index.songs.find(s => s.id === id)) return null
+        const existing = this.index.songs.find(s => s.id === id)
+
+        if (existing) {
+            // If already completely available and file exists on disk, do not re-register
+            if (existing.available && fs.existsSync(existing.filePath)) {
+                return null
+            }
+            // If it was incomplete, missing from disk, or previously evicted, clean up stale files and remove stale entry
+            if (existing.coverPath) {
+                try { fs.unlinkSync(existing.coverPath) } catch {}
+            }
+            try { fs.unlinkSync(existing.filePath) } catch {}
+            this.index.songs = this.index.songs.filter(s => s.id !== id)
+        }
+
         const ext = CacheManager.extForContentType(contentType)
         const filePath = path.join(this.cacheDir, id + '.' + ext)
         const song = {
@@ -154,7 +185,11 @@ class CacheManager {
     markFailed(url) {
         const id = this._urlToId(url)
         const song = this.index.songs.find(s => s.id === id)
-        if (song && !song.available) {
+        if (song) {
+            if (song.coverPath) {
+                try { fs.unlinkSync(song.coverPath) } catch {}
+            }
+            try { fs.unlinkSync(song.filePath) } catch {}
             this.index.songs = this.index.songs.filter(s => s.id !== id)
             this._saveIndex()
         }
@@ -183,15 +218,28 @@ class CacheManager {
 
     /** Evicts oldest songs when the cache exceeds MAX_CACHE_BYTES. */
     _cleanup() {
-        const songs = this.index.songs.filter(s => s.available).sort((a, b) => a.addedAt - b.addedAt)
-        let total = songs.reduce((sum, s) => sum + (s.size || 0), 0)
-        while (total > MAX_CACHE_BYTES && songs.length > 0) {
-            const oldest = songs.shift()
+        const availableSongs = this.index.songs.filter(s => s.available).sort((a, b) => a.addedAt - b.addedAt)
+        let total = availableSongs.reduce((sum, s) => sum + (s.size || 0), 0)
+        let evicted = false
+
+        while (total > MAX_CACHE_BYTES && availableSongs.length > 0) {
+            const oldest = availableSongs.shift()
+            // Unlink audio file
             try { fs.unlinkSync(oldest.filePath) } catch {}
-            oldest.available = false
+            // Unlink cover art file to avoid disk leakage
+            if (oldest.coverPath) {
+                try { fs.unlinkSync(oldest.coverPath) } catch {}
+            }
+            // Remove completely from index to prevent memory/index leakage and allow future re-caching
+            this.index.songs = this.index.songs.filter(s => s.id !== oldest.id)
             total -= oldest.size || 0
+            evicted = true
+            console.log(`[cache] Evicted oldest song from cache: "${oldest.title || oldest.id}"`)
         }
-        this._saveIndex()
+
+        if (evicted) {
+            this._saveIndex()
+        }
     }
 
     /**
